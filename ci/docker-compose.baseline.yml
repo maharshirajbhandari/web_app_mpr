@@ -1,0 +1,18 @@
+services:
+  postgres:
+    # Ansible currently uses postgis/postgis:<major>-3.5-alpine.
+    # The approved baseline also requires pgRouting, so CI uses the
+    # matching PostgreSQL/PostGIS line with pgRouting included.
+    image: ${CI_POSTGRES_IMAGE:-pgrouting/pgrouting:14-3.5-3.8.0}
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci_password
+      POSTGRES_DB: base_imis
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - ../../deployment_documentation/database/base_imis.sql:/baseline/base_imis.dump:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d base_imis"]
+      interval: 5s
+      timeout: 5s
+      retries: 30

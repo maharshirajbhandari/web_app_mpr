@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - staging
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application:
+    name: Application checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out application
+        uses: actions/checkout@v4
+        with:
+          path: web_app_mpr
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Check out database baseline
+        uses: actions/checkout@v4
+        with:
+          repository: base-imis/deployment_documentation
+          path: deployment_documentation
+
+      - name: A1-A2 - Validate PR and changed files
+        working-directory: web_app_mpr
+        run: bash ci/validate-pr.sh
+
+      - name: Validate Composer files
+        working-directory: web_app_mpr
+        run: docker run --rm -v "$PWD:/app" -w /app composer:2 validate --strict
+
+      - name: Check PHP syntax
+        working-directory: web_app_mpr
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app php:8.4-cli-bookworm \
+            bash -lc 'find app bootstrap config database routes tests -type f -name "*.php" -print0 | xargs -0 -n1 php -l'
+
+      - name: Install frontend dependencies and build assets
+        working-directory: web_app_mpr
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app node:22-bookworm-slim \
+            bash -lc 'npm ci && npm run production'
+
+      - name: Restore and verify current database baseline
+        working-directory: web_app_mpr
+        run: sh ci/restore-baseline.sh
+
+      - name: Build application image
+        working-directory: web_app_mpr
+        run: docker build --file Dockerfile.production --tag imis-ci-app:${{ github.sha }} .
+
+      - name: Run application tests against restored baseline
+        working-directory: web_app_mpr
+        run: |
+          CI_APP_IMAGE=imis-ci-app:${{ github.sha }} \
+            docker compose -f ci/docker-compose.image-test.yml up --build --abort-on-container-exit --exit-code-from app
+
+      - name: Stop CI services
+        if: always()
+        working-directory: web_app_mpr
+        run: |
+          docker compose -f ci/docker-compose.image-test.yml down -v
+          docker compose -f ci/docker-compose.baseline.yml down -v

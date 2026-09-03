@@ -1,0 +1,73 @@
+name: Step 00 - Developer Preflight
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preflight-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: Fork preflight checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out pushed commit
+        uses: actions/checkout@v4
+        with:
+          path: web_app_mpr
+          fetch-depth: 0
+
+      - name: Check out approved database baseline
+        uses: actions/checkout@v4
+        with:
+          repository: base-imis/deployment_documentation
+          path: deployment_documentation
+          fetch-depth: 1
+
+      - name: Validate changed files
+        working-directory: web_app_mpr
+        run: bash ci/validate-pr.sh
+
+      - name: Validate Composer files
+        working-directory: web_app_mpr
+        run: docker run --rm -v "$PWD:/app" -w /app composer:2 validate --strict
+
+      - name: Check PHP syntax
+        working-directory: web_app_mpr
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app php:8.4-cli-bookworm \
+            bash -lc 'find app bootstrap config database routes tests -type f -name "*.php" -print0 | xargs -0 -n1 php -l'
+
+      - name: Install frontend dependencies and build assets
+        working-directory: web_app_mpr
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app node:22-bookworm-slim \
+            bash -lc 'npm ci && npm run production'
+
+      - name: Restore approved baseline and run database-backed tests
+        working-directory: web_app_mpr
+        run: sh ci/restore-baseline.sh
+
+      - name: Build application test image
+        working-directory: web_app_mpr
+        run: docker build --file Dockerfile.production --tag imis-ci-app:${{ github.sha }} .
+
+      - name: Run application tests against restored baseline
+        working-directory: web_app_mpr
+        run: |
+          CI_APP_IMAGE=imis-ci-app:${{ github.sha }} \
+            docker compose -f ci/docker-compose.image-test.yml up --build --abort-on-container-exit --exit-code-from app
+
+      - name: Stop preflight services
+        if: always()
+        working-directory: web_app_mpr
+        run: |
+          docker compose -f ci/docker-compose.image-test.yml down -v
+          docker compose -f ci/docker-compose.baseline.yml down -v

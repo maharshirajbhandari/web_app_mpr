@@ -1,0 +1,44 @@
+services:
+  app:
+    image: ${CI_APP_IMAGE:-imis-ci-app:ci-foundation}
+    pull_policy: never
+    environment:
+      APP_ENV: testing
+      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      APP_DEBUG: "false"
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: base_imis
+      DB_USERNAME: postgres
+      DB_PASSWORD: ci_password
+      CACHE_DRIVER: array
+      SESSION_DRIVER: array
+      QUEUE_CONNECTION: sync
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["php", "artisan", "test", "--do-not-cache-result"]
+
+  nginx:
+    image: nginx:stable-alpine
+    volumes:
+      - ../public:/var/www/html/imis/public:ro
+      - ../docker/production/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - app
+
+  postgres:
+    image: pgrouting/pgrouting:14-3.5-3.8.0
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci_password
+      POSTGRES_DB: base_imis
+    volumes:
+      - ./postgres/image-test-init:/docker-entrypoint-initdb.d:ro
+      - ../../deployment_documentation/database/base_imis.sql:/baseline/base_imis.dump:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d base_imis"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
